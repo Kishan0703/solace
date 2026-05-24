@@ -1,0 +1,16 @@
+{
+  "name": "presenz-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "NODE_OPTIONS='--localstorage-file=.node-localstorage' next dev",
+    "build": "NODE_OPTIONS='--localstorage-file=.node-localstorage' next build",
+    "start": "NODE_OPTIONS='--localstorage-file=.node-localstorage' next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "15.3.2",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  }
+}

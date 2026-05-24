@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Byte-compiled / optimized / DLL files
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Pytest / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editor directories
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node
+/node_modules/
+node_modules/
+**/node_modules/
+web/node_modules/
+
+# Application data and generated media
+memorial_data/
+generated_audio/
+generated_video/
+cloud_memorial.log
+
+# Runtime / secrets
+.env
+.env.*
+.runtime-secrets.json
+*.pid
+
+# Database files
+*.db
+*.sqlite3

@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Presenz | Companion Studio</title>
+  <meta name="description" content="A working Presenz demo for profile building, reference ingestion, and grounded companion chat.">
+  <style>
+    :root{
+      --bg:#f3eee6;
+      --surface:#fffdf9;
+      --surface-soft:#f8f3ea;
+      --line:#d9cebf;
+      --text:#1f2a30;
+      --muted:#66727c;
+      --accent:#546f66;
+      --accent-strong:#3f564e;
+      --warm:#9f7250;
+      --user:#edf2f0;
+      --assistant:#f8f1e8;
+      --danger:#9a4a4a;
+      --shadow:0 18px 42px rgba(73, 54, 34, 0.08);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      min-height:100vh;
+      color:var(--text);
+      background:
+        radial-gradient(circle at 0% 0%, rgba(159,114,80,0.14), transparent 24%),
+        radial-gradient(circle at 100% 100%, rgba(84,111,102,0.12), transparent 20%),
+        linear-gradient(180deg,#f7f2ea 0%,#f1eade 100%);
+      font-family:"Avenir Next","Segoe UI",sans-serif;
+    }
+    .shell{max-width:1280px;margin:0 auto;padding:24px}
+    .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:16px}
+    .brand{
+      font-family:Charter,"Iowan Old Style",Georgia,serif;
+      font-size:34px;line-height:1;margin:0;
+    }
+    .sub{margin-top:6px;color:var(--muted);font-size:14px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    .btn,.link{
+      appearance:none;border:1px solid var(--line);border-radius:8px;padding:11px 14px;
+      background:rgba(255,253,249,0.92);color:var(--text);font:inherit;cursor:pointer;text-decoration:none;
+      display:inline-flex;align-items:center;justify-content:center;transition:transform .18s ease,background .18s ease;
+    }
+    .btn:hover,.link:hover{transform:translateY(-1px)}
+    .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+    .btn.danger{background:#fff0ef;border-color:#e6c7c7;color:var(--danger)}
+    .hero,.workspace{display:grid;gap:14px}
+    .hero{grid-template-columns:1.2fr .8fr;margin-bottom:14px}
+    .workspace{grid-template-columns:320px minmax(0,1fr) 340px}
+    .panel{
+      background:rgba(255,253,249,0.94);
+      border:1px solid var(--line);
+      border-radius:10px;
+      box-shadow:var(--shadow);
+    }
+    .hero-main{padding:28px}
+    .eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--warm);margin-bottom:14px}
+    .hero-main h2{
+      margin:0;
+      max-width:11ch;
+      font-size:44px;
+      line-height:1.02;
+      font-family:Charter,"Iowan Old Style",Georgia,serif;
+    }
+    .hero-main p{margin:16px 0 0;color:var(--muted);font-size:16px;line-height:1.75;max-width:60ch}
+    .hero-actions{margin-top:22px;display:flex;gap:10px;flex-wrap:wrap}
+    .hero-side{padding:22px;display:grid;gap:12px;align-content:start}
+    .meta{padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft)}
+    .meta b{display:block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+    .meta .state{font-size:18px;font-weight:700}
+    .ok{color:var(--accent-strong)} .bad{color:var(--danger)}
+    .meta p{margin:0;color:var(--muted);font-size:14px;line-height:1.6}
+
+    .section{padding:18px}
+    .section h3{margin:0 0 12px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+    .field{display:grid;gap:6px}
+    .stack{display:grid;gap:10px}
+    .field label{font-size:12px;color:var(--muted)}
+    .field input,.field textarea{
+      width:100%;padding:11px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--text);font:inherit;
+    }
+    .field textarea{min-height:92px;resize:vertical}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .profile-list,.memory-list,.reference-list,.chat-log{display:grid;gap:10px}
+    .card{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}
+    .profile-card.active{background:#f4eee5;border-color:#bda996}
+    .profile-card button{all:unset;cursor:pointer;display:block;width:100%}
+    .title{font-weight:700}
+    .meta-text{margin-top:4px;color:var(--muted);font-size:13px;line-height:1.55}
+
+    .chat-panel{display:grid;grid-template-rows:auto 1fr auto;height:100%}
+    .chat-head{padding:18px 18px 0}
+    .chat-name{margin:0;font-size:30px;line-height:1.05;font-family:Charter,"Iowan Old Style",Georgia,serif}
+    .chat-copy{margin-top:6px;color:var(--muted);font-size:14px;line-height:1.6}
+    .chat-log{padding:18px;overflow:auto;min-height:460px;max-height:560px}
+    .bubble{
+      max-width:90%;padding:12px 14px;border:1px solid var(--line);border-radius:8px;line-height:1.7;animation:fade .22s ease;
+    }
+    .bubble.user{margin-left:auto;background:var(--user)}
+    .bubble.assistant{background:var(--assistant)}
+    .bubble-meta{margin-top:6px;font-size:12px;color:var(--muted)}
+    .composer{padding:0 18px 18px;display:grid;gap:10px}
+    .composer-row{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}
+    .composer-note{font-size:13px;color:var(--muted);line-height:1.5}
+    .empty{border:1px dashed var(--line);border-radius:8px;padding:16px;background:rgba(255,255,255,0.68);color:var(--muted);line-height:1.7}
+    .pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted)}
+    .reference-actions{margin-top:10px;display:flex;justify-content:flex-end}
+    .reference-preview{
+      margin-top:8px;padding:10px;border-radius:8px;background:var(--surface-soft);border:1px solid var(--line);
+      font-size:13px;line-height:1.6;color:var(--muted);max-height:120px;overflow:auto;white-space:pre-wrap;
+    }
+    @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+    @media (max-width:1120px){.hero,.workspace{grid-template-columns:1fr}.chat-log{min-height:300px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <div>
+        <h1 class="brand">Presenz</h1>
+        <div class="sub">Companion studio for grounded profile-based conversations</div>
+      </div>
+      <div class="actions">
+        <a class="link" href="index.html">Overview</a>
+        <button class="btn" id="seedBtn" type="button">Load Example</button>
+        <button class="btn" id="resetBtn" type="button">Reset Demo</button>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="panel hero-main">
+        <div class="eyebrow">Working Demo</div>
+        <h2>Upload real context and get a grounded response back.</h2>
+        <p>
+          This version is built around the actual Presenz idea: photos, videos, voice, chat history, and documents
+          should shape the companion. The demo chat now uses extracted reference context and recent conversation,
+          instead of a repetitive local placeholder reply.
+        </p>
+        <div class="hero-actions">
+          <button class="btn primary" id="focusChatBtn" type="button">Start Chatting</button>
+          <button class="btn" id="loadOverviewBtn" type="button">Load Product Overview</button>
+        </div>
+      </div>
+      <div class="panel hero-side">
+        <div class="meta">
+          <b>Service</b>
+          <div id="serviceState" class="state">Checking backend...</div>
+          <p id="serviceNote">The demo can fall back locally, but the best chat quality comes from the backend demo API.</p>
+        </div>
+        <div class="meta">
+          <b>What Works</b>
+          <p>Profile creation, memory capture, reference ingestion, extracted document context, and backend-powered demo chat.</p>
+        </div>
+        <div class="meta">
+          <b>Input Types</b>
+          <p>Documents are parsed into chat context. Images, audio, and video can be attached as reference items with notes for now.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel section">
+        <h3>Profile</h3>
+        <div id="profileList" class="profile-list"></div>
+        <div class="stack" style="margin-top:14px">
+          <div class="field">
+            <label for="profileName">Person name</label>
+            <input id="profileName" type="text" placeholder="Who is being reconstructed">
+          </div>
+          <div class="field">
+            <label for="profileRelation">Relationship</label>
+            <input id="profileRelation" type="text" placeholder="Mother, father, partner, ancestor">
+          </div>
+          <div class="field">
+            <label for="profileStyle">Voice / style notes</label>
+            <input id="profileStyle" type="text" placeholder="Warm, practical, dry humour, short sentences">
+          </div>
+          <div class="split">
+            <button class="btn primary" id="saveProfileBtn" type="button">Save</button>
+            <button class="btn danger" id="deleteProfileBtn" type="button">Delete</button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="panel chat-panel">
+        <div class="chat-head">
+          <h2 class="chat-name" id="chatName">Companion Chat</h2>
+          <div class="chat-copy" id="chatCopy">Select a profile and add some reference context before chatting.</div>
+        </div>
+        <div id="chatLog" class="chat-log"></div>
+        <div class="composer">
+          <div class="field">
+            <label for="chatInput">Message</label>
+            <textarea id="chatInput" placeholder="Ask something factual, share what happened today, or ask about an uploaded reference."></textarea>
+          </div>
+          <div class="composer-row">
+            <div class="composer-note">The chat uses profile details, saved memories, extracted document text, reference notes, and recent history.</div>
+            <button class="btn primary" id="sendBtn" type="button">Send</button>
+          </div>
+        </div>
+      </main>
+
+      <aside class="panel section">
+        <h3>Memories</h3>
+        <div class="field">
+          <label for="memoryInput">Add memory</label>
+          <textarea id="memoryInput" placeholder="Birthdays, habits, common sayings, family routines, or anything that should guide the response."></textarea>
+        </div>
+        <button class="btn primary" id="saveMemoryBtn" type="button">Save Memory</button>
+        <div id="memoryList" class="memory-list" style="margin-top:12px"></div>
+
+        <h3 style="margin-top:18px">Reference Files</h3>
+        <div class="field">
+          <label for="referenceInput">Upload files</label>
+          <input id="referenceInput" type="file" multiple>
+        </div>
+        <div id="referenceList" class="reference-list"></div>
+        <div class="pill" id="toast">Ready</div>
+      </aside>
+    </section>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "presenz-demo-state-v3";
+    const DEFAULT_API = "http://localhost:8102";
+
+    const $ = (id) => document.getElementById(id);
+    const emptyState = () => ({
+      profiles: [],
+      activeProfileId: null,
+      memories: {},
+      chats: {},
+      references: {}
+    });
+
+    let state = loadState();
+    let serviceBase = null;
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? { ...emptyState(), ...JSON.parse(raw) } : emptyState();
+      } catch {
+        return emptyState();
+      }
+    }
+
+    function persistState() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function toast(message) {
+      $("toast").textContent = message;
+    }
+
+    function activeProfile() {
+      return state.profiles.find((item) => item.id === state.activeProfileId) || null;
+    }
+
+    function apiCandidates() {
+      const current = window.location.origin;
+      const values = [];
+      if (window.location.port === "8102") values.push(current);
+      values.push(DEFAULT_API);
+      if (!values.includes(current)) values.push(current);
+      return values;
+    }
+
+    async function checkService() {
+      const stateEl = $("serviceState");
+      const noteEl = $("serviceNote");
+      for (const base of apiCandidates()) {
+        try {
+          const res = await fetch(`${base}/health`);
+          if (!res.ok) continue;
+          const data = await res.json();
+          serviceBase = base;
+          stateEl.textContent = `Online at ${base.replace(/^https?:\/\//, "")}`;
+          stateEl.className = "state ok";
+          noteEl.textContent = `Backend demo chat is available. Gemini configured: ${data.gemini_configured ? "yes" : "no"}.`;
+          return;
+        } catch {}
+      }
+      serviceBase = null;
+      stateEl.textContent = "Offline";
+      stateEl.className = "state bad";
+      noteEl.textContent = "Backend not reachable. A limited local fallback will be used until the API is running on localhost:8102.";
+    }
+
+    function ensureExample() {
+      if (state.profiles.length) return;
+      const id = crypto.randomUUID();
+      state.profiles.push({
+        id,
+        name: "Asha",
+        relationship: "Mother",
+        speakingStyle: "Warm, direct, practical, comforting without sounding scripted"
+      });
+      state.activeProfileId = id;
+      state.memories[id] = [
+        { id: crypto.randomUUID(), text: "Her birthday is on 3 January.", createdAt: new Date().toISOString() },
+        { id: crypto.randomUUID(), text: "She checked whether everyone had eaten before talking about anything else.", createdAt: new Date().toISOString() }
+      ];
+      state.chats[id] = [
+        { role: "assistant", text: "Tell me what you want this space to remember first.", createdAt: new Date().toISOString() }
+      ];
+      state.references[id] = [];
+      persistState();
+    }
+
+    async function loadProductOverviewReference() {
+      const profile = activeProfile();
+      if (!profile) {
+        toast("Create or select a profile first.");
+        return;
+      }
+      if (!serviceBase) {
+        toast("Backend must be online to import the product overview document.");
+        return;
+      }
+      try {
+        let blob = null;
+        for (const url of ["../docs/Presenz_Product_Overview.docx", "/docs/Presenz_Product_Overview.docx", "docs/Presenz_Product_Overview.docx"]) {
+          try {
+            const response = await fetch(url);
+            if (!response.ok) continue;
+            blob = await response.blob();
+            break;
+          } catch {}
+        }
+        if (!blob) throw new Error("not found");
+        const file = new File([blob], "Presenz_Product_Overview.docx", { type: blob.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+        await ingestReferenceFile(file, profile.id);
+        renderReferences();
+        toast("Product overview loaded into references.");
+      } catch {
+        toast("Could not load the product overview document.");
+      }
+    }
+
+    function renderProfiles() {
+      const root = $("profileList");
+      root.innerHTML = "";
+      if (!state.profiles.length) {
+        root.innerHTML = '<div class="empty">No profiles yet. Start with a profile or load the example.</div>';
+        return;
+      }
+      state.profiles.forEach((profile) => {
+        const card = document.createElement("div");
+        card.className = `card profile-card ${profile.id === state.activeProfileId ? "active" : ""}`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.innerHTML = `
+          <div class="title">${escapeHtml(profile.name)}</div>
+          <div class="meta-text">${escapeHtml(profile.relationship || "Relationship not set")}</div>
+        `;
+        button.onclick = () => {
+          state.activeProfileId = profile.id;
+          persistState();
+          renderAll();
+        };
+        card.appendChild(button);
+        root.appendChild(card);
+      });
+    }
+
+    function renderProfileForm() {
+      const profile = activeProfile();
+      $("profileName").value = profile?.name || "";
+      $("profileRelation").value = profile?.relationship || "";
+      $("profileStyle").value = profile?.speakingStyle || "";
+    }
+
+    function renderChatHeader() {
+      const profile = activeProfile();
+      $("chatName").textContent = profile ? profile.name : "Companion Chat";
+      $("chatCopy").textContent = profile
+        ? `${profile.relationship || "Profile"} active. The backend chat uses memories, references, and recent history.`
+        : "Select a profile and add some reference context before chatting.";
+    }
+
+    function renderMemories() {
+      const root = $("memoryList");
+      const profile = activeProfile();
+      root.innerHTML = "";
+      if (!profile) {
+        root.innerHTML = '<div class="empty">Select a profile to store memories.</div>';
+        return;
+      }
+      const items = state.memories[profile.id] || [];
+      if (!items.length) {
+        root.innerHTML = '<div class="empty">No memories yet. Add a few specific details.</div>';
+        return;
+      }
+      items.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div>${escapeHtml(item.text)}</div>
+          <div class="meta-text">${new Date(item.createdAt).toLocaleString()}</div>
+        `;
+        root.appendChild(card);
+      });
+    }
+
+    function renderReferences() {
+      const root = $("referenceList");
+      const profile = activeProfile();
+      root.innerHTML = "";
+      if (!profile) {
+        root.innerHTML = '<div class="empty">Select a profile to attach reference files.</div>';
+        return;
+      }
+      const items = state.references[profile.id] || [];
+      if (!items.length) {
+        root.innerHTML = '<div class="empty">No references yet. Upload documents, images, audio, or video and add notes when needed.</div>';
+        return;
+      }
+      items.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="title">${escapeHtml(item.name)}</div>
+          <div class="meta-text">${escapeHtml(item.kind)}${item.mimeType ? ` • ${escapeHtml(item.mimeType)}` : ""}</div>
+          ${item.extractedText ? `<div class="reference-preview">${escapeHtml(item.extractedText.slice(0, 800))}</div>` : ""}
+          <div class="field" style="margin-top:10px">
+            <label>Reference notes</label>
+            <textarea data-ref-id="${item.id}" placeholder="Add what this file should contribute to the companion.">${escapeHtml(item.notes || "")}</textarea>
+          </div>
+          <div class="reference-actions">
+            <button class="btn danger" type="button" data-remove-ref="${item.id}">Remove</button>
+          </div>
+        `;
+        root.appendChild(card);
+      });
+      root.querySelectorAll("textarea[data-ref-id]").forEach((textarea) => {
+        textarea.addEventListener("change", (event) => {
+          const refId = event.target.getAttribute("data-ref-id");
+          const target = (state.references[profile.id] || []).find((item) => item.id === refId);
+          if (!target) return;
+          target.notes = event.target.value;
+          persistState();
+          toast("Reference notes updated.");
+        });
+      });
+      root.querySelectorAll("button[data-remove-ref]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const refId = button.getAttribute("data-remove-ref");
+          state.references[profile.id] = (state.references[profile.id] || []).filter((item) => item.id !== refId);
+          persistState();
+          renderReferences();
+          toast("Reference removed.");
+        });
+      });
+    }
+
+    function renderChat() {
+      const root = $("chatLog");
+      const profile = activeProfile();
+      root.innerHTML = "";
+      if (!profile) {
+        root.innerHTML = '<div class="empty">A conversation will appear here after you create or select a profile.</div>';
+        return;
+      }
+      const items = state.chats[profile.id] || [];
+      if (!items.length) {
+        root.innerHTML = '<div class="empty">Start the conversation. Ask about a memory or something inside an uploaded document.</div>';
+        return;
+      }
+      items.forEach((item) => {
+        const bubble = document.createElement("div");
+        bubble.className = `bubble ${item.role === "user" ? "user" : "assistant"}`;
+        bubble.innerHTML = `
+          <div>${escapeHtml(item.text)}</div>
+          <div class="bubble-meta">${item.role === "user" ? "You" : profile.name} • ${new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+        `;
+        root.appendChild(bubble);
+      });
+      root.scrollTop = root.scrollHeight;
+    }
+
+    function renderAll() {
+      renderProfiles();
+      renderProfileForm();
+      renderChatHeader();
+      renderMemories();
+      renderReferences();
+      renderChat();
+    }
+
+    function saveProfile() {
+      const name = $("profileName").value.trim();
+      const relationship = $("profileRelation").value.trim();
+      const speakingStyle = $("profileStyle").value.trim();
+      if (!name) {
+        toast("Profile name is required.");
+        return;
+      }
+      const current = activeProfile();
+      if (current) {
+        current.name = name;
+        current.relationship = relationship;
+        current.speakingStyle = speakingStyle;
+      } else {
+        const id = crypto.randomUUID();
+        state.profiles.unshift({ id, name, relationship, speakingStyle });
+        state.activeProfileId = id;
+        state.memories[id] = [];
+        state.chats[id] = [{ role: "assistant", text: "Add a few memories or references and then ask me something specific.", createdAt: new Date().toISOString() }];
+        state.references[id] = [];
+      }
+      persistState();
+      renderAll();
+      toast("Profile saved.");
+    }
+
+    function deleteProfile() {
+      const profile = activeProfile();
+      if (!profile) {
+        toast("No active profile.");
+        return;
+      }
+      state.profiles = state.profiles.filter((item) => item.id !== profile.id);
+      delete state.memories[profile.id];
+      delete state.chats[profile.id];
+      delete state.references[profile.id];
+      state.activeProfileId = state.profiles[0]?.id || null;
+      persistState();
+      renderAll();
+      toast("Profile deleted.");
+    }
+
+    function saveMemory() {
+      const profile = activeProfile();
+      const text = $("memoryInput").value.trim();
+      if (!profile) {
+        toast("Select a profile first.");
+        return;
+      }
+      if (!text) {
+        toast("Memory text is empty.");
+        return;
+      }
+      const items = state.memories[profile.id] || [];
+      items.unshift({ id: crypto.randomUUID(), text, createdAt: new Date().toISOString() });
+      state.memories[profile.id] = items.slice(0, 24);
+      $("memoryInput").value = "";
+      persistState();
+      renderMemories();
+      toast("Memory saved.");
+    }
+
+    async function ingestReferenceFile(file, profileId) {
+      const item = {
+        id: crypto.randomUUID(),
+        name: file.name,
+        kind: file.type.startsWith("image/") ? "image" : file.type.startsWith("audio/") ? "audio" : file.type.startsWith("video/") ? "video" : "document",
+        mimeType: file.type || "",
+        extractedText: "",
+        notes: ""
+      };
+      if (serviceBase) {
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          const res = await fetch(`${serviceBase}/api/demo/extract-reference`, { method: "POST", body: form });
+          if (res.ok) {
+            const data = await res.json();
+            item.kind = data.kind || item.kind;
+            item.mimeType = data.mime_type || item.mimeType;
+            item.extractedText = data.extracted_text || "";
+          }
+        } catch {}
+      }
+      if (!item.extractedText && file.type.startsWith("text/")) {
+        item.extractedText = await file.text();
+      }
+      const refs = state.references[profileId] || [];
+      refs.unshift(item);
+      state.references[profileId] = refs.slice(0, 12);
+      persistState();
+    }
+
+    async function handleReferenceUpload(event) {
+      const profile = activeProfile();
+      const files = Array.from(event.target.files || []);
+      if (!profile) {
+        toast("Select a profile first.");
+        event.target.value = "";
+        return;
+      }
+      if (!files.length) return;
+      toast("Processing references...");
+      for (const file of files) {
+        await ingestReferenceFile(file, profile.id);
+      }
+      event.target.value = "";
+      renderReferences();
+      toast(`${files.length} reference file${files.length === 1 ? "" : "s"} added.`);
+    }
+
+    function localFallbackReply(profile, message) {
+      const references = state.references[profile.id] || [];
+      const extracted = references.map((item) => item.extractedText).filter(Boolean).join("\n");
+      const lower = message.toLowerCase();
+      if (lower.includes("presenz") && extracted) {
+        return extracted.slice(0, 500);
+      }
+      if (state.memories[profile.id]?.length) {
+        return `I am using the saved context here. One important detail is: ${state.memories[profile.id][0].text}`;
+      }
+      return `I can respond better once you add memories or reference material. Right now, you asked: ${message}`;
+    }
+
+    async function sendMessage() {
+      const profile = activeProfile();
+      const message = $("chatInput").value.trim();
+      if (!profile) {
+        toast("Select a profile first.");
+        return;
+      }
+      if (!message) return;
+
+      const log = state.chats[profile.id] || [];
+      log.push({ role: "user", text: message, createdAt: new Date().toISOString() });
+      $("chatInput").value = "";
+      renderChat();
+      toast("Generating response...");
+
+      let responseText = "";
+      if (serviceBase) {
+        try {
+          const payload = {
+            profile_name: profile.name,
+            relationship: profile.relationship || "",
+            speaking_style: profile.speakingStyle || "",
+            memories: (state.memories[profile.id] || []).map((item) => item.text),
+            references: (state.references[profile.id] || []).map((item) => ({
+              name: item.name,
+              kind: item.kind,
+              mime_type: item.mimeType || "",
+              extracted_text: item.extractedText || "",
+              notes: item.notes || ""
+            })),
+            history: log.slice(-8).map((item) => ({ role: item.role, text: item.text })),
+            message
+          };
+          const res = await fetch(`${serviceBase}/api/demo/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            const data = await res.json();
+            responseText = data.response_text || "";
+          }
+        } catch {}
+      }
+
+      if (!responseText) {
+        responseText = localFallbackReply(profile, message);
+      }
+
+      log.push({ role: "assistant", text: responseText, createdAt: new Date().toISOString() });
+      state.chats[profile.id] = log.slice(-40);
+      persistState();
+      renderChat();
+      toast("Response ready.");
+    }
+
+    function resetDemo() {
+      localStorage.removeItem(STORAGE_KEY);
+      state = emptyState();
+      ensureExample();
+      renderAll();
+      toast("Demo reset.");
+    }
+
+    $("saveProfileBtn").addEventListener("click", saveProfile);
+    $("deleteProfileBtn").addEventListener("click", deleteProfile);
+    $("saveMemoryBtn").addEventListener("click", saveMemory);
+    $("referenceInput").addEventListener("change", handleReferenceUpload);
+    $("sendBtn").addEventListener("click", sendMessage);
+    $("focusChatBtn").addEventListener("click", () => $("chatInput").focus());
+    $("seedBtn").addEventListener("click", () => { ensureExample(); renderAll(); toast("Example profile loaded."); });
+    $("resetBtn").addEventListener("click", resetDemo);
+    $("loadOverviewBtn").addEventListener("click", loadProductOverviewReference);
+    $("chatInput").addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") sendMessage();
+    });
+
+    ensureExample();
+    renderAll();
+    checkService();
+  </script>
+</body>
+</html>
