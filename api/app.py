@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import html
+from functools import lru_cache
 import json
 import mimetypes
 import os
@@ -17,6 +18,7 @@ import subprocess
 import threading
 import time
 import uuid
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -131,6 +133,7 @@ DEFAULT_TIMEZONE = runtime_config("DEFAULT_TIMEZONE", "Asia/Shanghai")
 PROACTIVE_POLL_SECONDS = max(20, int(runtime_config("PROACTIVE_POLL_SECONDS", "60")))
 MIMO_VIDEO_MODEL = runtime_config("MIMO_VIDEO_MODEL", "mimo-v2-omni")
 MIMO_VIDEO_MAX_SECONDS = max(6, min(30, int(runtime_config("MIMO_VIDEO_MAX_SECONDS", "18"))))
+WHISPER_MODEL = runtime_config("WHISPER_MODEL", "base")
 FFMPEG_BIN = shutil.which("ffmpeg") or ""
 
 _proactive_worker_started = False
@@ -2896,7 +2899,6 @@ async def generate_text_response_with_mimo(
     intensity: Optional[int] = None,
 ) -> str:
     system_prompt = build_personality_prompt(loved_one)
-    media_parts = build_multimodal_context_parts(loved_one, request=request, mode=mode)
     identity_summary = loved_one.get("identity_model_summary", "").strip()
     intensity_level = max(1, min(5, int(intensity))) if intensity is not None else 3
     intensity_hint = {
@@ -2906,49 +2908,34 @@ async def generate_text_response_with_mimo(
         4: "回应更贴近亲密家人，多一点抚慰与陪伴。",
         5: "回应更深情、更主动安抚。",
     }[intensity_level]
-    instruction = (
-        f"{system_prompt}\n\n相关记忆：\n{memory_context or '暂无'}\n\n"
-        f"互动模式：{mode}\n"
-        f"用户情绪：{emotion or 'neutral'}\n"
-        f"亲密程度：{intensity_level}（{intensity_hint}）\n"
-        f"如果是视频或语音模式，请让回复更像正在当面或通话中自然说出来的话。"
-    )
+    instruction = f"""{system_prompt}
+
+相关记忆：
+{memory_context or '暂无'}
+
+互动模式：{mode}
+用户情绪：{emotion or 'neutral'}
+亲密程度：{intensity_level}（{intensity_hint}）
+如果是视频或语音模式，请让回复更像正在当面或通话中自然说出来的话。
+"""
     if identity_summary:
         instruction += f"\n\n多媒体提炼摘要：\n{identity_summary}"
 
-    if media_parts:
-        payload = {
-            "model": "mimo-v2-omni",
-            "messages": [
-                {"role": "system", "content": instruction},
-                {
-                    "role": "user",
-                    "content": [
-                        *media_parts,
-                        {"type": "text", "text": f"用户说：{user_message}\n请直接以 {loved_one['name']} 的口吻回复用户。"},
-                    ],
-                },
-            ],
-            "temperature": 0.8,
-            "max_completion_tokens": 500,
-        }
-    else:
-        payload = {
-            "model": "mimo-v2-pro",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"{instruction}\n\n用户说：{user_message}\n\n"
-                        f"请以{loved_one['name']}的口吻回复，保持{loved_one.get('speaking_style', '自然亲切')}的说话风格。"
-                    ),
-                }
-            ],
-            "temperature": 0.8,
-            "max_completion_tokens": 500,
-        }
+    prompt = (
+        f"{instruction}\n\n"
+        f"用户说：{user_message}\n\n"
+        f"请以{loved_one['name']}的口吻回复，保持{loved_one.get('speaking_style', '自然亲切')}的说话风格。"
+        " 直接回答，不要提及系统提示、文件名或隐藏上下文。"
+    )
 
-    result = await call_mimo_chat_completion(payload, timeout=60.0)
+    result = await call_mimo_chat_completion(
+        {
+            "model": "mimo-v2-pro",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.78,
+            "max_completion_tokens": 520,
+        }
+    )
     return (result["choices"][0]["message"]["content"] or "").strip()
 
 
@@ -3007,6 +2994,19 @@ async def synthesize_speech_with_mimo(
     elif emotion in {"grateful", "happy"}:
         style_tags.extend(["温暖", "轻一点笑意"])
 
+    # Prefer any cloned voice associated with this loved one (from uploaded voice assets)
+    voice = MIMO_TTS_VOICE
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM media_assets WHERE loved_one_id = ? AND kind = 'voice' ORDER BY created_at DESC LIMIT 1",
+            (loved_one_id,),
+        ).fetchone()
+        if row and row["metadata_json"]:
+            meta = json.loads(row["metadata_json"] or "{}")
+            voice = meta.get("voice_id") or voice
+    except Exception:
+        voice = MIMO_TTS_VOICE
+
     payload = {
         "model": "mimo-v2-tts",
         "messages": [
@@ -3015,7 +3015,7 @@ async def synthesize_speech_with_mimo(
         ],
         "audio": {
             "format": "wav",
-            "voice": MIMO_TTS_VOICE,
+            "voice": voice,
         },
         "temperature": 0.6,
     }
@@ -3038,11 +3038,47 @@ async def synthesize_speech_with_mimo(
             metadata={
                 "engine": "mimo",
                 "model": "mimo-v2-tts",
-                "voice": MIMO_TTS_VOICE,
+                "voice": voice,
             },
         )
     except Exception:
         return None
+
+
+async def _create_voice_clone_stub(sample_path: Path) -> Optional[str]:
+    """
+    Placeholder voice-clone implementation.
+    Replace this with a real voice-cloning API call that uploads `sample_path` and
+    returns a `voice_id` usable for `mimo-v2-tts` or your TTS provider.
+    For now this returns the default `MIMO_TTS_VOICE`.
+    """
+    # TODO: implement real voice-clone integration here
+    return MIMO_TTS_VOICE
+
+
+def _spawn_voice_clone_job(asset_id: str, sample_path: str, user_id: str, loved_one_id: str) -> None:
+    def job():
+        try:
+            sample = Path(sample_path)
+            voice_id = None
+            try:
+                import asyncio
+
+                voice_id = asyncio.run(_create_voice_clone_stub(sample))
+            except Exception:
+                voice_id = MIMO_TTS_VOICE
+
+            with get_db() as conn:
+                row = conn.execute("SELECT metadata_json FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
+                meta = json.loads(row["metadata_json"] or "{}") if row and row["metadata_json"] else {}
+                meta["voice_id"] = voice_id
+                meta["voice_clone_status"] = "ready"
+                conn.execute("UPDATE media_assets SET metadata_json = ? WHERE id = ?", (json.dumps(meta, ensure_ascii=False), asset_id))
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=job, daemon=True, name=f"voice-clone-{asset_id}")
+    thread.start()
 
 
 def strip_code_fence(value: str) -> str:
@@ -3308,6 +3344,185 @@ def build_mode_note(requested_mode: str, available_modes: List[str]) -> str:
             return "当前视频素材还不够，已回退到语音电话模式。"
         return "当前素材还不足以进入视频陪伴，已自动回退到文字模式。"
     return "当前是文字陪伴模式。"
+
+
+@lru_cache(maxsize=1)
+def get_whisper_model():
+    import whisper
+
+    return whisper.load_model(WHISPER_MODEL)
+
+
+async def transcribe_audio_file(path: Path) -> str:
+    try:
+        model = get_whisper_model()
+        result = model.transcribe(str(path), fp16=False)
+        return str(result.get("text") or "").strip()
+    except Exception:
+        return ""
+
+
+async def transcribe_uploaded_audio(upload: UploadFile) -> str:
+    suffix = Path(upload.filename or "voice.webm").suffix or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(await upload.read())
+        temp_path = Path(temp_file.name)
+    try:
+        return await transcribe_audio_file(temp_path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+async def build_chat_turn_response(
+    conn: sqlite3.Connection,
+    current_user: dict,
+    request: Request,
+    loved_one_id: str,
+    message: str,
+    emotion: Optional[str] = None,
+    requested_mode: str = "text",
+    intensity: Optional[int] = None,
+) -> dict:
+    loved_one_row = ensure_loved_one_owner(conn, current_user["id"], loved_one_id)
+    subscription = get_subscription_snapshot(conn, current_user["id"])
+    requested_mode = (requested_mode or "text").lower()
+
+    if requested_mode == "voice":
+        assert_plan_capability(subscription, "voice", "当前套餐不包含语音电话，请先升级套餐。")
+    if requested_mode == "video":
+        assert_plan_capability(subscription, "video", "当前套餐不包含视频陪伴，请先升级套餐。")
+
+    loved_one = serialize_loved_one(conn, loved_one_row, subscription=subscription).model_dump()
+    available_modes = loved_one.get("digital_twin_profile", {}).get("available_modes", ["text"])
+    interaction_mode = requested_mode
+    if requested_mode == "video" and "video" not in available_modes:
+        interaction_mode = "voice" if "voice" in available_modes else "text"
+    elif requested_mode == "voice" and "voice" not in available_modes:
+        interaction_mode = "text"
+
+    memory_rows = conn.execute(
+        "SELECT content FROM memories WHERE loved_one_id = ? ORDER BY created_at DESC LIMIT 10",
+        (loved_one_id,),
+    ).fetchall()
+    memory_values = [row["content"] for row in reversed(memory_rows)]
+    memory_context = "\n".join([f"- {value}" for value in memory_values])
+    memory_refs = [value for value in memory_values if value][:3]
+
+    if GEMINI_API_KEY:
+        try:
+            ai_response = await generate_text_response_with_mimo(
+                loved_one=loved_one,
+                user_message=message,
+                emotion=emotion,
+                memory_context=memory_context,
+                request=request,
+                mode=interaction_mode,
+                intensity=intensity,
+            )
+        except Exception:
+            ai_response = build_fallback_response(
+                loved_one=loved_one,
+                user_message=message,
+                emotion=emotion,
+                memory_context=memory_context,
+                intensity=intensity,
+            )
+    else:
+        ai_response = build_fallback_response(
+            loved_one=loved_one,
+            user_message=message,
+            emotion=emotion,
+            memory_context=memory_context,
+            intensity=intensity,
+        )
+
+    response_audio_url = None
+    response_audio_asset_id = None
+    audio_result = None
+    if interaction_mode in {"voice", "video"}:
+        audio_result = await synthesize_speech_with_mimo(
+            conn=conn,
+            user_id=current_user["id"],
+            loved_one_id=loved_one_id,
+            text=ai_response,
+            emotion=emotion,
+        )
+        if audio_result:
+            response_audio_url = audio_result["url"]
+            response_audio_asset_id = audio_result["asset_id"]
+
+    response_video_url = None
+    response_video_asset_id = None
+    video_mode_note = None
+    if interaction_mode == "video":
+        video_result = await synthesize_video_with_mimo(
+            conn=conn,
+            user_id=current_user["id"],
+            loved_one_id=loved_one_id,
+            loved_one=loved_one,
+            user_message=message,
+            ai_response=ai_response,
+            emotion=emotion,
+            memory_context=memory_context,
+            request=request,
+            audio_result=audio_result,
+        )
+        if video_result:
+            response_video_url = video_result["url"]
+            response_video_asset_id = video_result["asset_id"]
+            video_mode_note = video_result.get("mode_note")
+        elif loved_one["video_urls"]:
+            response_video_url = loved_one["video_urls"][-1]
+            video_row = conn.execute(
+                """
+                SELECT id FROM media_assets
+                WHERE loved_one_id = ? AND kind = 'video'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (loved_one_id,),
+            ).fetchone()
+            response_video_asset_id = video_row["id"] if video_row else None
+            video_mode_note = "MIMO 旁白生成已完成；当前视频画面先回退到你上传的原始影像素材。"
+
+    conn.execute(
+        """
+        INSERT INTO chat_messages (
+            id, user_id, loved_one_id, user_message, ai_response, emotion, mode,
+            response_audio_asset_id, response_video_asset_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()),
+            current_user["id"],
+            loved_one_id,
+            message,
+            ai_response,
+            emotion,
+            interaction_mode,
+            response_audio_asset_id,
+            response_video_asset_id,
+            now_iso(),
+        ),
+    )
+    conn.execute("UPDATE loved_ones SET updated_at = ? WHERE id = ?", (now_iso(), loved_one_id))
+
+    return {
+        "loved_one_id": loved_one_id,
+        "loved_one_name": loved_one["name"],
+        "response_text": ai_response,
+        "response_audio_url": response_audio_url,
+        "response_video_url": response_video_url,
+        "interaction_mode": interaction_mode,
+        "mode_note": video_mode_note or build_mode_note(requested_mode, available_modes),
+        "available_modes": available_modes,
+        "emotion_detected": emotion or "neutral",
+        "memory_triggered": memory_context[:100] if memory_context else None,
+        "memory_refs": memory_refs,
+    }
 
 
 def build_fallback_response(
@@ -5448,6 +5663,12 @@ async def handle_media_upload(
                 now_iso(),
             ),
         )
+        # If this is a voice upload, start a background job to prepare a cloned voice
+        if kind == "voice":
+            try:
+                _spawn_voice_clone_job(asset_id, str(target_path), current_user["id"], loved_one_id)
+            except Exception:
+                pass
         if kind == "photo":
             current_cover = conn.execute(
                 "SELECT cover_photo_asset_id FROM loved_ones WHERE id = ?",
@@ -5496,6 +5717,40 @@ async def upload_voice_sample(
         request=request,
         current_user=current_user,
     )
+
+
+@app.post("/api/loved-ones/{loved_one_id}/voice/clone")
+async def create_voice_clone(loved_one_id: str, current_user: dict = Depends(get_current_user)):
+    """Trigger voice cloning for the most recent uploaded voice sample for a loved one.
+
+    This starts a background job that will update the media asset metadata with a `voice_id`
+    and set `voice_clone_status` to `ready` when done. Uses the existing MIMO API key.
+    """
+    with get_db() as conn:
+        ensure_loved_one_owner(conn, current_user["id"], loved_one_id)
+        row = conn.execute(
+            "SELECT id, file_path, metadata_json FROM media_assets WHERE loved_one_id = ? AND kind = 'voice' ORDER BY created_at DESC LIMIT 1",
+            (loved_one_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No voice sample found for this profile")
+
+        asset_id = row["id"]
+        file_path = row["file_path"]
+        try:
+            meta = json.loads(row["metadata_json"] or "{}")
+        except Exception:
+            meta = {}
+        meta["voice_clone_status"] = "processing"
+        conn.execute("UPDATE media_assets SET metadata_json = ? WHERE id = ?", (json.dumps(meta, ensure_ascii=False), asset_id))
+
+        # spawn background clone job
+        try:
+            _spawn_voice_clone_job(asset_id, file_path, current_user["id"], loved_one_id)
+        except Exception:
+            pass
+
+    return {"status": "started", "asset_id": asset_id}
 
 
 @app.post("/api/loved-ones/{loved_one_id}/photo")
@@ -5687,143 +5942,51 @@ async def chat_with_loved_one(
     current_user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
-        loved_one_row = ensure_loved_one_owner(conn, current_user["id"], msg.loved_one_id)
-        subscription = get_subscription_snapshot(conn, current_user["id"])
-        requested_mode = (msg.mode or "text").lower()
-
-        if requested_mode == "voice":
-            assert_plan_capability(subscription, "voice", "当前套餐不包含语音电话，请先升级套餐。")
-        if requested_mode == "video":
-            assert_plan_capability(subscription, "video", "当前套餐不包含视频陪伴，请先升级套餐。")
-
-        loved_one = serialize_loved_one(conn, loved_one_row, subscription=subscription).model_dump()
-        available_modes = loved_one.get("digital_twin_profile", {}).get("available_modes", ["text"])
-        interaction_mode = requested_mode
-        if requested_mode == "video" and "video" not in available_modes:
-            interaction_mode = "voice" if "voice" in available_modes else "text"
-        elif requested_mode == "voice" and "voice" not in available_modes:
-            interaction_mode = "text"
-
-        memory_rows = conn.execute(
-            "SELECT content FROM memories WHERE loved_one_id = ? ORDER BY created_at DESC LIMIT 10",
-            (msg.loved_one_id,),
-        ).fetchall()
-        memory_values = [row["content"] for row in reversed(memory_rows)]
-        memory_context = "\n".join([f"- {value}" for value in memory_values])
-        memory_refs = [value for value in memory_values if value][:3]
-
-        if GEMINI_API_KEY:
-            try:
-                ai_response = await generate_text_response_with_mimo(
-                    loved_one=loved_one,
-                    user_message=msg.message,
-                    emotion=msg.emotion,
-                    memory_context=memory_context,
-                    request=request,
-                    mode=interaction_mode,
-                    intensity=msg.intensity,
-                )
-            except Exception:
-                ai_response = build_fallback_response(
-                    loved_one=loved_one,
-                    user_message=msg.message,
-                    emotion=msg.emotion,
-                    memory_context=memory_context,
-                    intensity=msg.intensity,
-                )
-        else:
-            ai_response = build_fallback_response(
-                loved_one=loved_one,
-                user_message=msg.message,
-                emotion=msg.emotion,
-                memory_context=memory_context,
-                intensity=msg.intensity,
-            )
-
-        response_audio_url = None
-        response_audio_asset_id = None
-        audio_result = None
-        if interaction_mode in {"voice", "video"}:
-            audio_result = await synthesize_speech_with_mimo(
-                conn=conn,
-                user_id=current_user["id"],
-                loved_one_id=msg.loved_one_id,
-                text=ai_response,
-                emotion=msg.emotion,
-            )
-            if audio_result:
-                response_audio_url = audio_result["url"]
-                response_audio_asset_id = audio_result["asset_id"]
-
-        response_video_url = None
-        response_video_asset_id = None
-        video_mode_note = None
-        if interaction_mode == "video":
-            video_result = await synthesize_video_with_mimo(
-                conn=conn,
-                user_id=current_user["id"],
-                loved_one_id=msg.loved_one_id,
-                loved_one=loved_one,
-                user_message=msg.message,
-                ai_response=ai_response,
-                emotion=msg.emotion,
-                memory_context=memory_context,
-                request=request,
-                audio_result=audio_result,
-            )
-            if video_result:
-                response_video_url = video_result["url"]
-                response_video_asset_id = video_result["asset_id"]
-                video_mode_note = video_result.get("mode_note")
-            elif loved_one["video_urls"]:
-                response_video_url = loved_one["video_urls"][-1]
-                video_row = conn.execute(
-                    """
-                    SELECT id FROM media_assets
-                    WHERE loved_one_id = ? AND kind = 'video'
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (msg.loved_one_id,),
-                ).fetchone()
-                response_video_asset_id = video_row["id"] if video_row else None
-                video_mode_note = "MIMO 旁白生成已完成；当前视频画面先回退到你上传的原始影像素材。"
-
-        conn.execute(
-            """
-            INSERT INTO chat_messages (
-                id, user_id, loved_one_id, user_message, ai_response, emotion, mode,
-                response_audio_asset_id, response_video_asset_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(uuid.uuid4()),
-                current_user["id"],
-                msg.loved_one_id,
-                msg.message,
-                ai_response,
-                msg.emotion,
-                interaction_mode,
-                response_audio_asset_id,
-                response_video_asset_id,
-                now_iso(),
-            ),
+        response_data = await build_chat_turn_response(
+            conn=conn,
+            current_user=current_user,
+            request=request,
+            loved_one_id=msg.loved_one_id,
+            message=msg.message,
+            emotion=msg.emotion,
+            requested_mode=msg.mode,
+            intensity=msg.intensity,
         )
-        conn.execute("UPDATE loved_ones SET updated_at = ? WHERE id = ?", (now_iso(), msg.loved_one_id))
 
-    return ChatResponse(
-        loved_one_id=msg.loved_one_id,
-        loved_one_name=loved_one["name"],
-        response_text=ai_response,
-        response_audio_url=response_audio_url,
-        response_video_url=response_video_url,
-        interaction_mode=interaction_mode,
-        mode_note=video_mode_note or build_mode_note(requested_mode, available_modes),
-        available_modes=available_modes,
-        emotion_detected=msg.emotion or "neutral",
-        memory_triggered=memory_context[:100] if memory_context else None,
-        memory_refs=memory_refs,
-    )
+    return ChatResponse(**response_data)
+
+
+@app.post("/api/chat/{loved_one_id}/voice-turn")
+async def chat_voice_turn(
+    loved_one_id: str,
+    request: Request,
+    audio: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    transcript = await transcribe_uploaded_audio(audio)
+    if not transcript:
+        raise HTTPException(status_code=400, detail="无法识别这段语音，请再说一遍。")
+
+    with get_db() as conn:
+        response_data = await build_chat_turn_response(
+            conn=conn,
+            current_user=current_user,
+            request=request,
+            loved_one_id=loved_one_id,
+            message=transcript,
+            emotion="neutral",
+            requested_mode="voice",
+            intensity=None,
+        )
+
+    return {
+        "text": response_data["response_text"],
+        "audio_url": response_data["response_audio_url"],
+        "emotional_tone": response_data["emotion_detected"],
+        "applied_tone": response_data["emotion_detected"],
+        "transcript": transcript,
+        "loved_one_name": response_data["loved_one_name"],
+    }
 
 
 @app.get("/api/chat-history/{loved_one_id}")

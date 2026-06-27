@@ -64,7 +64,7 @@ export default function ProfileHomePage() {
             href={`/profile/${profile.id}/call`}
             style={{ justifyContent: "center" }}
           >
-            Start a call
+            Talk with them
           </Link>
         </div>
       </section>

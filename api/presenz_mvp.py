@@ -1119,15 +1119,13 @@ Respond now as {profile['name']}:"""
 
             response_text = await gemini_generate_text(system_prompt, max_tokens=520, temperature=0.78)
             if not response_text:
+                latest_memory = ""
                 if memory_context:
-                    response_text = (
-                        f"You know, I was just thinking about that. "
-                        f"Give me a moment — I want to give you a proper answer."
-                    )
+                    latest_memory = memory_context.split("\n")[-1].strip()
+                if latest_memory:
+                    response_text = f"I’m thinking about what you said, and I keep coming back to: {latest_memory[:180]}. Tell me a little more so I can answer properly."
                 else:
-                    response_text = (
-                        f"I'm here. Tell me more — what's on your mind?"
-                    )
+                    response_text = f"I’m here. Tell me a little more about what you mean, and I’ll answer as clearly as I can."
             user_message_id = str(uuid.uuid4())
             assistant_message_id = str(uuid.uuid4())
             conn.execute(

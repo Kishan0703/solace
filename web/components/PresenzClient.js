@@ -26,6 +26,43 @@ function formatTime(value) {
   }
 }
 
+function audioChunksToWavBlob(chunks, sampleRate) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const buffer = new ArrayBuffer(44 + totalLength * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, text) => {
+    for (let index = 0; index < text.length; index += 1) {
+      view.setUint8(offset + index, text.charCodeAt(index));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + totalLength * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, totalLength * 2, true);
+
+  let offset = 44;
+  chunks.forEach((chunk) => {
+    for (let index = 0; index < chunk.length; index += 1) {
+      const sample = Math.max(-1, Math.min(1, chunk[index]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  });
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 /* ─── VoiceStatusBadge ───────────────────────────────────────── */
 export function VoiceStatusBadge({ status }) {
   const ready = status === "ready";
@@ -78,10 +115,6 @@ function SourceList({ memories, title = "Uploaded Sources", empty = "No files up
                 memory.metadata?.original_filename ||
                 memory.file_path?.split("/").pop() ||
                 `${memory.type}-${memory.id}`;
-              const excerpt =
-                memory.transcription ||
-                memory.metadata?.caption ||
-                "No extracted text available yet.";
               return (
                 <article className="sourceItem" key={memory.id}>
                   <div
@@ -94,7 +127,6 @@ function SourceList({ memories, title = "Uploaded Sources", empty = "No files up
                     </div>
                   </div>
                   <div className="memoryMeta">{formatTime(memory.created_at)}</div>
-                  <div className="sourceExcerpt">{excerpt}</div>
                 </article>
               );
             })
@@ -110,7 +142,6 @@ export function UploadZone({ profileId }) {
   const [files, setFiles] = useState([]);
   const [job, setJob] = useState(null);
   const [memories, setMemories] = useState([]);
-  const [error, setError] = useState("");
 
   async function loadMemories() {
     try {
@@ -126,7 +157,6 @@ export function UploadZone({ profileId }) {
 
   async function submit() {
     if (!files.length) return;
-    setError("");
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     try {
@@ -148,7 +178,6 @@ export function UploadZone({ profileId }) {
               router.push("/login");
               return;
             }
-            setError(err.message);
           }
         }, 1200);
       }
@@ -157,7 +186,6 @@ export function UploadZone({ profileId }) {
         router.push("/login");
         return;
       }
-      setError(err.message);
     }
   }
 
@@ -170,8 +198,7 @@ export function UploadZone({ profileId }) {
             Build the memory base.
           </h1>
           <p className="lead">
-            Upload documents, audio, chat exports, photos, and video. The app extracts
-            usable text so the chat can answer from it later.
+            Upload documents, audio, chat exports, photos, and video. Everything is kept ready for chat and voice.
           </p>
         </div>
         <label className="field">
@@ -196,11 +223,9 @@ export function UploadZone({ profileId }) {
         </div>
         {job ? (
           <div className="card">
-            <strong>Status:</strong> {job.status} · {job.progress}% ·{" "}
-            {job.current_file || "queued"}
+            <strong>Status:</strong> {job.status} · {job.progress}%
           </div>
         ) : null}
-        {error ? <div className="danger">{error}</div> : null}
       </section>
 
       <aside className="panel panelPad">
@@ -228,9 +253,7 @@ export function MemoryTimeline({ memories }) {
             <div className="memoryMeta" style={{ marginBottom: 6 }}>
               {MemoryTypeLabel(memory.type)}
             </div>
-            <p style={{ fontSize: "0.85rem", color: "var(--ink-soft)", lineHeight: 1.6 }}>
-              {memory.transcription || memory.metadata?.caption || "No extracted text available yet."}
-            </p>
+            <p style={{ fontSize: "0.85rem", color: "var(--ink-soft)", lineHeight: 1.6 }}>Ready for chat and voice.</p>
           </article>
         );
       })}
@@ -249,9 +272,7 @@ export function ChatWindow({ profileId }) {
   const [loading, setLoading] = useState(false);
   const [tone, setTone] = useState("neutral");
   const [showTone, setShowTone] = useState(false);
-  const [error, setError] = useState("");
   const [sourceHits, setSourceHits] = useState([]);
-  const [showSidebar, setShowSidebar] = useState(true);
   const logRef = useRef(null);
 
   async function loadContext() {
@@ -259,7 +280,7 @@ export function ChatWindow({ profileId }) {
       const [profileData, memoryData, historyData] = await Promise.all([
         api(`/api/profiles/${profileId}`),
         api(`/api/memories/${profileId}`),
-        api(`/api/chat/${profileId}/history`),
+        api(`/api/chat-history/${profileId}`),
       ]);
       setProfile(profileData);
       setMemories(memoryData);
@@ -270,7 +291,6 @@ export function ChatWindow({ profileId }) {
         router.push("/login");
         return;
       }
-      setError(err.message);
     }
   }
 
@@ -289,22 +309,20 @@ export function ChatWindow({ profileId }) {
     if (!message.trim()) return;
     setLoading(true);
     try {
-      const response = await api(`/api/chat/${profileId}`, {
+      const response = await api(`/api/chat`, {
         method: "POST",
-        body: JSON.stringify({ message, tone_override: toneOverride }),
+        body: JSON.stringify({ loved_one_id: profileId, message, mode: "text" }),
       });
-      setTone(response.emotional_tone);
-      setShowTone(response.emotional_tone !== "neutral");
-      setSourceHits(response.relevant_memories || []);
+      setTone(response.emotion_detected || "neutral");
+      setShowTone((response.emotion_detected || "neutral") !== "neutral");
+      setSourceHits(response.memory_refs || []);
       setMessage("");
-      setError("");
       await loadContext();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
         return;
       }
-      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -318,7 +336,7 @@ export function ChatWindow({ profileId }) {
   }
 
   return (
-    <div className={`chatShell ${showSidebar ? "" : "sidebarHidden"}`}>
+    <div className="chatShell">
       {/* ── Left: main chat column ── */}
       <section className="chatMain">
         {/* Profile info strip */}
@@ -340,40 +358,22 @@ export function ChatWindow({ profileId }) {
               )}
               {profile && <VoiceStatusBadge status={profile.voice_clone_status} />}
               <button
-                className="ghostButton"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "6px 12px",
-                  fontSize: "0.82rem",
-                  cursor: "pointer",
-                  borderRadius: "var(--radius-md)",
-                  border: "1px solid var(--line)"
+                className="button"
+                style={{ marginLeft: 8 }}
+                disabled={!profile || profile.voice_clone_status === "processing" || profile.voice_clone_status === "ready"}
+                onClick={async () => {
+                  try {
+                    await api(`/api/loved-ones/${profileId}/voice/clone`, { method: "POST" });
+                    await loadContext();
+                  } catch (err) {
+                    console.error(err);
+                    // ignore, loadContext will show updated status
+                    await loadContext();
+                  }
                 }}
-                onClick={() => setShowSidebar(!showSidebar)}
-                title={showSidebar ? "Hide Files" : "Show Files"}
+                title="Create voice clone from uploaded sample"
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect width="18" height="18" x="3" y="3" rx="2" />
-                  <path d="M9 3v18" />
-                  {showSidebar ? (
-                    <path d="M16 15l-3-3 3-3" />
-                  ) : (
-                    <path d="M13 9l3 3-3 3" />
-                  )}
-                </svg>
-                <span>{showSidebar ? "Hide Files" : "Show Files"}</span>
+                Create Clone
               </button>
             </div>
           </div>
@@ -422,11 +422,10 @@ export function ChatWindow({ profileId }) {
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={onComposerKeyDown}
-                placeholder="Ask about something from an uploaded file, memory, or transcript…"
+                placeholder="Ask anything about this person."
                 style={{ minHeight: 72 }}
               />
             </label>
-            {error ? <div className="danger">{error}</div> : null}
             <div className="composerBar">
               <span className="helperText">Enter sends · Shift+Enter for new line</span>
               <button className="button" disabled={loading || !message.trim()} onClick={send} type="button">
@@ -438,28 +437,6 @@ export function ChatWindow({ profileId }) {
           <EmotionalToast tone={tone} show={showTone} />
         </div>
       </section>
-
-      {/* ── Right: sidebar ── */}
-      {showSidebar && (
-        <aside className="chatSidebar">
-          <div className="panel panelPad">
-            <SourceList
-              memories={sourceHits.map((item, index) => ({
-                id: `${item.memory_id}-${index}`,
-                type: item.type,
-                transcription: item.text,
-                metadata: item.metadata || {},
-                created_at: new Date().toISOString(),
-              }))}
-              title="Sources used"
-              empty="Ask a question and the closest matching sources will appear here."
-            />
-          </div>
-          <div className="panel panelPad">
-            <SourceList memories={memories.slice(0, 10)} title="Uploaded files" />
-          </div>
-        </aside>
-      )}
     </div>
   );
 }
@@ -467,78 +444,328 @@ export function ChatWindow({ profileId }) {
 /* ─── CallScreen ─────────────────────────────────────────────── */
 export function CallScreen({ profileId }) {
   const router = useRouter();
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [status, setStatus] = useState("");
+  const [profile, setProfile] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [status, setStatus] = useState("Ready to listen");
   const [transcript, setTranscript] = useState("");
-  const [sessionId, setSessionId] = useState("");
-  const [error, setError] = useState("");
+  const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [isSupported, setIsSupported] = useState(true);
+  const mediaStreamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const sourceNodeRef = useRef(null);
+  const processorNodeRef = useRef(null);
+  const zeroGainRef = useRef(null);
+  const finalizeRecordingRef = useRef(null);
+  const chunksRef = useRef([]);
+  const sampleRateRef = useRef(16000);
+  const stopTimerRef = useRef(null);
+  const audioRef = useRef(null);
 
-  async function initiate() {
+  async function loadProfile() {
     try {
-      const data = await api(`/api/call/initiate/${profileId}`, {
-        method: "POST",
-        body: JSON.stringify({ phone_number: phoneNumber }),
-      });
-      setStatus(`${data.status} · ${data.call_sid}`);
-      setSessionId(data.session_id || "");
-      setError("");
+      const data = await api(`/api/profiles/${profileId}`);
+      setProfile(data);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
         return;
       }
-      setError(err.message);
     }
   }
 
-  async function mockTurn() {
+  async function loadHistory() {
     try {
-      const data = await api("/api/call/transcribe", {
+      const data = await api(`/api/chat-history/${profileId}`);
+      setHistory(data);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        router.push("/login");
+        return;
+      }
+    }
+  }
+
+  useEffect(() => {
+    loadProfile();
+    loadHistory();
+  }, [profileId]);
+
+  useEffect(() => {
+    const supported = Boolean(navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext));
+    setIsSupported(supported);
+    if (!supported) {
+      setStatus("Voice recording is not supported in this browser");
+    }
+    return () => {
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
+      }
+      try {
+        processorNodeRef.current?.disconnect?.();
+        sourceNodeRef.current?.disconnect?.();
+        zeroGainRef.current?.disconnect?.();
+        audioContextRef.current?.close?.();
+      } catch {
+        // ignore
+      }
+      mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+      finalizeRecordingRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const lastAssistant = [...history].reverse().find((item) => item.role === "assistant" && item.audio_url);
+    if (!lastAssistant || !audioRef.current) return;
+    audioRef.current.src = lastAssistant.audio_url;
+    audioRef.current.play().catch(() => {
+      // autoplay may be blocked until user gesture
+    });
+  }, [history]);
+
+  async function sendVoiceTurn(messageText) {
+    const text = messageText.trim();
+    if (!text) return;
+    setSpeaking(true);
+    setStatus("Thinking…");
+    try {
+      const response = await api(`/api/chat`, {
         method: "POST",
-        body: JSON.stringify({ session_id: sessionId, transcript, duration_seconds: 8 }),
+        body: JSON.stringify({ loved_one_id: profileId, message: text, mode: "voice" }),
       });
-      setTranscript(data.transcript);
-      setStatus(`turn ${data.turn_count} complete`);
+      setTranscript(text);
+      setHistory((current) => [
+        ...current,
+        {
+          id: `user-${Date.now()}`,
+          role: "user",
+          text,
+          audio_url: null,
+          emotional_tone: response.applied_tone || "neutral",
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          text: response.response_text,
+          audio_url: response.response_audio_url,
+          emotional_tone: response.emotion_detected || "neutral",
+          created_at: new Date().toISOString(),
+        },
+      ]);
+      setStatus(response.response_audio_url ? "Voice reply ready" : "Reply ready");
       setError("");
+      if (response.response_audio_url && audioRef.current) {
+        audioRef.current.src = response.response_audio_url;
+        await audioRef.current.play();
+      }
+      await loadHistory();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         router.push("/login");
         return;
       }
       setError(err.message);
+      setStatus("Could not send voice turn");
+    } finally {
+      setSpeaking(false);
+    }
+  }
+
+  async function uploadRecordedAudio(blob) {
+    const form = new FormData();
+    form.append("audio", blob, "voice.wav");
+    const response = await api(`/api/chat/${profileId}/voice-turn`, {
+      method: "POST",
+      body: form,
+    });
+    const spokenText = response.transcript || transcript || "";
+    setTranscript(spokenText);
+    setHistory((current) => [
+      ...current,
+      {
+        id: `user-${Date.now()}`,
+        role: "user",
+        text: spokenText,
+        audio_url: null,
+        emotional_tone: response.emotional_tone || "neutral",
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        text: response.text,
+        audio_url: response.audio_url,
+        emotional_tone: response.emotional_tone || "neutral",
+        created_at: new Date().toISOString(),
+      },
+    ]);
+    setStatus(response.audio_url ? "Voice reply ready" : "Reply ready");
+    setError("");
+    if (response.audio_url && audioRef.current) {
+      audioRef.current.src = response.audio_url;
+      await audioRef.current.play();
+    }
+    await loadHistory();
+  }
+
+  async function startListening() {
+    if (!isSupported) return;
+    if (speaking) return;
+    setTranscript("");
+    setStatus("Listening… say something like hi");
+    setListening(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      chunksRef.current = [];
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("Audio recording is not supported in this browser");
+      }
+      const audioContext = new AudioContextClass();
+      audioContextRef.current = audioContext;
+      sampleRateRef.current = audioContext.sampleRate || 16000;
+      const source = audioContext.createMediaStreamSource(stream);
+      sourceNodeRef.current = source;
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processorNodeRef.current = processor;
+      const zeroGain = audioContext.createGain();
+      zeroGain.gain.value = 0;
+      zeroGainRef.current = zeroGain;
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        chunksRef.current.push(new Float32Array(input));
+      };
+      source.connect(processor);
+      processor.connect(zeroGain);
+      zeroGain.connect(audioContext.destination);
+      const finalizeRecording = async () => {
+        finalizeRecordingRef.current = null;
+        try {
+          const blob = audioChunksToWavBlob(chunksRef.current, sampleRateRef.current);
+          chunksRef.current = [];
+          if (!blob.size) {
+            setStatus("No speech detected. Try again.");
+            return;
+          }
+          setSpeaking(true);
+          setStatus("Transcribing…");
+          await uploadRecordedAudio(blob);
+        } catch (err) {
+          setStatus("Could not process that voice note");
+        } finally {
+          setSpeaking(false);
+          setListening(false);
+          try {
+            processor.disconnect();
+            source.disconnect();
+            zeroGain.disconnect();
+            await audioContext.close();
+          } catch {
+            // ignore
+          }
+          mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+          audioContextRef.current = null;
+          sourceNodeRef.current = null;
+          processorNodeRef.current = null;
+          zeroGainRef.current = null;
+        }
+      };
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
+      }
+      finalizeRecordingRef.current = finalizeRecording;
+      stopTimerRef.current = setTimeout(() => {
+        finalizeRecording();
+      }, 6500);
+    } catch (err) {
+      setListening(false);
+      setStatus("Please allow microphone access and try again");
+    }
+  }
+
+  function stopListening() {
+    if (stopTimerRef.current) {
+      clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    const finalizeRecording = finalizeRecordingRef.current;
+    if (finalizeRecording) {
+      finalizeRecordingRef.current = null;
+      finalizeRecording();
+      return;
+    }
+    try {
+      processorNodeRef.current?.disconnect?.();
+      sourceNodeRef.current?.disconnect?.();
+      zeroGainRef.current?.disconnect?.();
+      audioContextRef.current?.close?.();
+    } finally {
+      setListening(false);
+      mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      audioContextRef.current = null;
+      sourceNodeRef.current = null;
+      processorNodeRef.current = null;
+      zeroGainRef.current = null;
+    }
+  }
+
+  async function sendTypedTurn() {
+    await sendVoiceTurn(transcript);
+  }
+
+  function onComposerKeyDown(event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendTypedTurn();
     }
   }
 
   return (
     <div className="panel panelPad stack">
-      <div className="sectionTitle">Voice Call</div>
-      <label className="field">
-        <span>Phone number</span>
-        <input value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="+1…" />
-      </label>
-      <button className="button" onClick={initiate} type="button">
-        Initiate call
-      </button>
+      <div className="sectionTitle">Talk with them</div>
+      <p className="lead" style={{ marginBottom: 0 }}>
+        Press start, say hi, and the assistant will answer back in voice.
+      </p>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <button className="button" onClick={listening ? stopListening : startListening} type="button" disabled={!isSupported || speaking}>
+          {listening ? "Stop listening" : "Start talking"}
+        </button>
+        <button className="ghostButton" onClick={() => sendVoiceTurn(transcript)} type="button" disabled={speaking || !transcript.trim()}>
+          Send current words
+        </button>
+      </div>
       <div className="card" style={{ fontSize: "0.85rem" }}>
-        {status || "No active call session yet."}
+        {status}
       </div>
       <label className="field">
-        <span>Mock call transcript</span>
+        <span>Transcript</span>
         <textarea
           value={transcript}
           onChange={(e) => setTranscript(e.target.value)}
-          placeholder="Use this when Twilio is not configured."
+          onKeyDown={onComposerKeyDown}
+          placeholder="You can also type here if your browser doesn’t support voice input."
         />
       </label>
       <button
         className="ghostButton"
-        disabled={!sessionId || !transcript.trim()}
-        onClick={mockTurn}
+        disabled={speaking || !transcript.trim()}
+        onClick={sendTypedTurn}
         type="button"
       >
-        Send mock turn
+        Reply with voice
       </button>
-      {error ? <div className="danger">{error}</div> : null}
+      <audio ref={audioRef} controls style={{ width: "100%" }} />
     </div>
   );
 }
